@@ -11,7 +11,7 @@ const state = {
         records: {},
     },
     selectedSchoolId: "",
-    selectedGrade: "6",
+    selectedGrade: "",
     selectedClass: "",
     selectedSkillId: DEFAULT_SKILL_ID,
     selectedTestId: "",
@@ -73,6 +73,21 @@ const elements = {
     editTestBtn: document.getElementById("editTestBtn"),
     deleteTestBtn: document.getElementById("deleteTestBtn"),
     selectedTestMeta: document.getElementById("selectedTestMeta"),
+    openRestoreCenterBtn: document.getElementById("openRestoreCenterBtn"),
+    restoreModal: document.getElementById("restoreModal"),
+    closeRestoreCenterBtn: document.getElementById("closeRestoreCenterBtn"),
+    createManualBackupBtn: document.getElementById("createManualBackupBtn"),
+    refreshRestoreCenterBtn: document.getElementById("refreshRestoreCenterBtn"),
+    selectVisibleTrashBtn: document.getElementById("selectVisibleTrashBtn"),
+    clearTrashSelectionBtn: document.getElementById("clearTrashSelectionBtn"),
+    restoreSelectedTrashBtn: document.getElementById("restoreSelectedTrashBtn"),
+    restoreSearchInput: document.getElementById("restoreSearchInput"),
+    restoreTypeFilter: document.getElementById("restoreTypeFilter"),
+    trashTableBody: document.getElementById("trashTableBody"),
+    trashCountBadge: document.getElementById("trashCountBadge"),
+    backupList: document.getElementById("backupList"),
+    backupCountBadge: document.getElementById("backupCountBadge"),
+    restoreDataInfo: document.getElementById("restoreDataInfo"),
 };
 
 const SEMESTER_LABELS = {
@@ -183,28 +198,9 @@ function ensureSchoolGradeStructure(school) {
 }
 
 
-function makeDefaultSchool() {
-    const school = {
-        id: "school_default",
-        name: "Tên trường",
-        grades: {
-            "6": ["6i1", "6i2"],
-        },
-        classConfigs: {},
-    };
-
-    Object.entries(school.grades).forEach(([grade, classes]) => {
-        classes.forEach((className) => {
-            ensureClassConfigForSchool(school, grade, className);
-        });
-    });
-
-    return school;
-}
-
 function makeDefaultData() {
     return {
-        schools: [makeDefaultSchool()],
+        schools: [],
         records: {},
     };
 }
@@ -265,6 +261,367 @@ function safeGetLocalStorage() {
 }
 
 const storage = safeGetLocalStorage();
+
+const IS_LOCAL_HOST = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+const LOCAL_SERVER_BASE = IS_LOCAL_HOST ? "" : "http://127.0.0.1:3000";
+const SAVE_DEBOUNCE_MS = 450;
+const DRAFT_DEBOUNCE_MS = 500;
+
+let saveTimer = null;
+let draftTimer = null;
+let lastSaveStatus = "";
+let restoreCenterTrashItems = [];
+let restoreCenterBackups = [];
+
+function getCurrentSettingsSnapshot() {
+    return {
+        selectedSchoolId: state.selectedSchoolId,
+        selectedGrade: state.selectedGrade,
+        selectedClass: state.selectedClass,
+        selectedSkillId: state.selectedSkillId,
+        selectedTestId: state.selectedTestId,
+        selectedSemester: state.selectedSemester,
+        sortMode: state.sortMode,
+    };
+}
+
+async function apiRequest(path, options = {}) {
+    const response = await fetch(`${LOCAL_SERVER_BASE}${path}`, {
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+        },
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `API error: ${response.status}`);
+    }
+    return payload;
+}
+
+async function saveStateNow(reason = "autosave") {
+    try {
+        const payload = {
+            data: state.data,
+            settings: getCurrentSettingsSnapshot(),
+            reason,
+        };
+        const result = await apiRequest("/api/state", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+        lastSaveStatus = result.savedAt || new Date().toISOString();
+        updateStorageHint();
+        return true;
+    } catch (error) {
+        console.error(error);
+        if (storage) {
+            storage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+            storage.setItem(SETTINGS_KEY, JSON.stringify(getCurrentSettingsSnapshot()));
+        }
+        state.storageAvailable = false;
+        updateStorageHint("Không kết nối được Local JSON Server. Đang lưu tạm trong trình duyệt.");
+        return false;
+    }
+}
+
+function scheduleSaveState(reason = "autosave") {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveStateNow(reason), SAVE_DEBOUNCE_MS);
+}
+
+async function flushPendingSave(reason = "flush") {
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+    return saveStateNow(reason);
+}
+
+function updateStorageHint(extraMessage = "") {
+    if (!elements.storageHint) return;
+    if (extraMessage) {
+        elements.storageHint.textContent = extraMessage;
+        return;
+    }
+    if (state.storageAvailable) {
+        const savedText = lastSaveStatus ? ` · Lưu lần cuối: ${formatDateTime(lastSaveStatus)}` : "";
+        elements.storageHint.textContent = `Local JSON Server: dữ liệu dùng chung trong máy${savedText}`;
+    } else {
+        elements.storageHint.textContent = "Đang dùng localStorage tạm thời. Hãy chạy node script.js để lưu vào file local trên máy.";
+    }
+}
+
+function formatDateTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("vi-VN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
+
+function buildCurrentDraft() {
+    return {
+        context: getCurrentSettingsSnapshot(),
+        editingId: state.editingId,
+        studentName: elements.studentName?.value || "",
+        answers: getCurrentFormAnswers(),
+        totalText: elements.totalScore?.textContent || "0",
+    };
+}
+
+async function saveDraftNow() {
+    if (!state.storageAvailable) return;
+    const draft = buildCurrentDraft();
+    if (!draft.studentName && !Object.values(draft.answers || {}).some((value) => String(value || "").trim() !== "")) return;
+    try {
+        await apiRequest("/api/draft", {
+            method: "POST",
+            body: JSON.stringify({ draft }),
+        });
+    } catch (error) {
+        console.warn("Cannot save draft", error.message);
+    }
+}
+
+function scheduleDraftSave() {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(saveDraftNow, DRAFT_DEBOUNCE_MS);
+}
+
+async function clearDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    if (!state.storageAvailable) return;
+    try {
+        await apiRequest("/api/draft", { method: "DELETE" });
+    } catch (error) {
+        console.warn("Cannot clear draft", error.message);
+    }
+}
+
+async function restoreDraftIfAvailable() {
+    if (!state.storageAvailable) return;
+    try {
+        const result = await apiRequest("/api/draft");
+        const draft = result.draft;
+        if (!draft || !draft.studentName && !Object.values(draft.answers || {}).some((value) => String(value || "").trim() !== "")) return;
+        const ok = window.confirm(
+            `Phát hiện dữ liệu đang nhập chưa lưu (${formatDateTime(draft.savedAt)}).\nBạn có muốn khôi phục bản nháp này không?`
+        );
+        if (!ok) return;
+
+        if (draft.context) {
+            state.selectedSchoolId = draft.context.selectedSchoolId || state.selectedSchoolId;
+            state.selectedGrade = draft.context.selectedGrade || state.selectedGrade;
+            state.selectedClass = draft.context.selectedClass || state.selectedClass;
+            state.selectedSkillId = draft.context.selectedSkillId || state.selectedSkillId;
+            state.selectedTestId = draft.context.selectedTestId || state.selectedTestId;
+            state.selectedSemester = draft.context.selectedSemester || state.selectedSemester;
+            ensureValidSelection();
+            renderAll();
+        }
+        state.editingId = draft.editingId || null;
+        elements.studentName.value = draft.studentName || "";
+        renderPartScoreInputs(draft.answers || {});
+        elements.saveBtn.textContent = state.editingId ? "Cập nhật học sinh" : "Lưu học sinh";
+        showToast("Đã khôi phục dữ liệu nháp.");
+    } catch (error) {
+        console.warn("Cannot load draft", error.message);
+    }
+}
+
+function createTrashId(prefix = "trash") {
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getContextText(context = {}) {
+    return [
+        context.schoolName,
+        context.grade ? getGradeLabel(context.grade) : "",
+        context.className ? `Lớp ${context.className}` : "",
+        context.skillName,
+        context.semester ? (SEMESTER_LABELS[context.semester] || context.semester) : "",
+        context.testName,
+    ].filter(Boolean).join(" · ");
+}
+
+function buildRecordTrashItem(record, recordKey, reason = "Xóa điểm học sinh") {
+    return {
+        trashId: createTrashId("record"),
+        entityType: "student-record",
+        deletedAt: new Date().toISOString(),
+        reason,
+        context: {
+            schoolId: record.schoolId,
+            schoolName: record.schoolName,
+            grade: record.grade,
+            className: record.className,
+            skillId: record.skillId,
+            skillName: record.skillName,
+            semester: record.semester,
+            testId: record.testId,
+            testName: record.testName,
+            fullName: record.fullName,
+            total: record.total,
+        },
+        payload: {
+            recordKey,
+            record: JSON.parse(JSON.stringify(record)),
+        },
+    };
+}
+
+function buildMetadataTrashItem(entityType, context, payload, reason) {
+    return {
+        trashId: createTrashId("meta"),
+        entityType,
+        deletedAt: new Date().toISOString(),
+        reason,
+        context,
+        payload,
+    };
+}
+
+async function addTrashItems(items) {
+    if (!items.length || !state.storageAvailable) return;
+    try {
+        await apiRequest("/api/trash/add", {
+            method: "POST",
+            body: JSON.stringify({ items }),
+        });
+    } catch (error) {
+        console.error(error);
+        showToast("Không lưu được dữ liệu vào thùng rác. Hãy kiểm tra Local JSON Server.");
+    }
+}
+
+function ensureRestoreSchool(context) {
+    let school = state.data.schools.find((item) => item.id === context.schoolId);
+    if (!school) {
+        school = state.data.schools.find((item) => getSearchableText(item.name) === getSearchableText(context.schoolName));
+    }
+    if (!school) {
+        school = {
+            id: context.schoolId || createId("school"),
+            name: context.schoolName || "Trường khôi phục",
+            grades: {},
+            classConfigs: {},
+        };
+        state.data.schools.push(school);
+    }
+    ensureSchoolGradeStructure(school);
+    return school;
+}
+
+function restoreRecordTrashItem(item) {
+    const record = item?.payload?.record;
+    const context = item?.context || {};
+    if (!record) return false;
+
+    const school = ensureRestoreSchool(context);
+    const grade = context.grade || record.grade || "6";
+    const className = context.className || record.className || `${grade}A`;
+    if (!school.grades[grade]) school.grades[grade] = [];
+    if (!school.grades[grade].some((name) => getSearchableText(name) === getSearchableText(className))) {
+        school.grades[grade].push(className);
+        school.grades[grade].sort((a, b) => collator.compare(a, b));
+    }
+
+    const config = ensureClassConfigForSchool(school, grade, className);
+    let skill = config.skills.find((item) => item.id === record.skillId);
+    if (!skill) skill = config.skills.find((item) => getSearchableText(item.name) === getSearchableText(record.skillName));
+    if (!skill) {
+        skill = {
+            id: record.skillId || createId("skill_restore"),
+            name: record.skillName || "Restored Skill",
+            parts: [],
+        };
+        Object.keys(record.scores || record.answers || {}).forEach((partId, index) => {
+            skill.parts.push({ id: partId, label: `Part ${index + 1}`, maxQuestions: 1, maxPoints: Number(record.scores?.[partId] || 1) || 1 });
+        });
+        if (!skill.parts.length) skill.parts = makeDefaultSkill(skill.name).parts;
+        config.skills.push(skill);
+    }
+
+    let test = config.tests.find((item) => item.id === record.testId);
+    if (!test) test = config.tests.find((item) => getSearchableText(item.name) === getSearchableText(record.testName));
+    if (!test) {
+        test = { id: record.testId || createId("test"), name: record.testName || "Bài khôi phục" };
+        config.tests.push(test);
+        config.tests.sort((a, b) => collator.compare(a.name, b.name));
+    }
+
+    const restoredRecord = {
+        ...record,
+        schoolId: school.id,
+        schoolName: school.name,
+        grade,
+        className,
+        skillId: skill.id,
+        skillName: skill.name,
+        testId: test.id,
+        testName: test.name,
+        restoredAt: new Date().toISOString(),
+    };
+
+    const classKey = getClassKey(school.id, grade, className);
+    const recordKey = getRecordKey(classKey, skill.id);
+    if (!Array.isArray(state.data.records[recordKey])) state.data.records[recordKey] = [];
+    const bucket = state.data.records[recordKey];
+    const duplicateIndex = bucket.findIndex((existing) =>
+        getSearchableText(existing.fullName) === getSearchableText(restoredRecord.fullName) &&
+        String(existing.semester || "I") === String(restoredRecord.semester || "I") &&
+        (existing.testId === restoredRecord.testId || getSearchableText(existing.testName) === getSearchableText(restoredRecord.testName))
+    );
+
+    if (duplicateIndex !== -1) bucket[duplicateIndex] = { ...bucket[duplicateIndex], ...restoredRecord };
+    else bucket.push(restoredRecord);
+
+    state.selectedSchoolId = school.id;
+    state.selectedGrade = grade;
+    state.selectedClass = className;
+    state.selectedSkillId = skill.id;
+    state.selectedTestId = test.id;
+    state.selectedSemester = restoredRecord.semester || "I";
+    return true;
+}
+
+function restoreMetadataTrashItem(item) {
+    const payload = item?.payload || {};
+    const context = item?.context || {};
+    if (item.entityType === "class-metadata") {
+        const school = ensureRestoreSchool(context);
+        const grade = context.grade || payload.grade || "6";
+        const className = context.className || payload.className || `${grade}A`;
+        if (!school.grades[grade]) school.grades[grade] = [];
+        if (!school.grades[grade].includes(className)) school.grades[grade].push(className);
+        ensureClassConfigForSchool(school, grade, className);
+        return true;
+    }
+    if (item.entityType === "test-metadata") {
+        const school = ensureRestoreSchool(context);
+        const grade = context.grade || "6";
+        const className = context.className || `${grade}A`;
+        if (!school.grades[grade]) school.grades[grade] = [];
+        if (!school.grades[grade].includes(className)) school.grades[grade].push(className);
+        const config = ensureClassConfigForSchool(school, grade, className);
+        const test = payload.test || { id: context.testId || createId("test"), name: context.testName || "Bài khôi phục" };
+        if (!config.tests.some((item) => item.id === test.id || getSearchableText(item.name) === getSearchableText(test.name))) {
+            config.tests.push(test);
+            config.tests.sort((a, b) => collator.compare(a.name, b.name));
+        }
+        return true;
+    }
+    return false;
+}
+
 
 function getClassKey(schoolId, grade, className) {
     return `${schoolId}::${grade}::${className}`;
@@ -373,8 +730,18 @@ function recordBelongsToTestAnySemester(record, test) {
 }
 
 function ensureValidSelection() {
+    if (!Array.isArray(state.data.schools)) {
+        state.data.schools = [];
+    }
+
     if (!state.data.schools.length) {
-        state.data.schools = [makeDefaultSchool()];
+        state.selectedSchoolId = "";
+        state.selectedGrade = "";
+        state.selectedClass = "";
+        state.selectedSkillId = "";
+        state.selectedTestId = "";
+        state.selectedSemester = "I";
+        return;
     }
 
     if (!state.data.schools.some((school) => school.id === state.selectedSchoolId)) {
@@ -539,34 +906,47 @@ function ensureTestsFromRecords() {
     });
 }
 
-function loadState() {
-    if (!storage) {
-        state.data = makeDefaultData();
-        ensureValidSelection();
-        return;
-    }
-
+async function loadState() {
     try {
-        const saved = JSON.parse(storage.getItem(STORAGE_KEY) || "null");
-        const settings = JSON.parse(storage.getItem(SETTINGS_KEY) || "{}");
+        const result = await apiRequest("/api/state");
+        state.storageAvailable = true;
+        state.data = result.data && typeof result.data === "object" ? result.data : makeDefaultData();
+        const settings = result.settings || {};
+        state.selectedSchoolId = settings.selectedSchoolId || "";
+        state.selectedGrade = settings.selectedGrade || "6";
+        state.selectedClass = settings.selectedClass || "";
+        state.selectedSkillId = settings.selectedSkillId || "";
+        state.selectedTestId = settings.selectedTestId || "";
+        state.selectedSemester = settings.selectedSemester || "I";
+        state.sortMode = settings.sortMode || "given";
 
-        if (saved && Array.isArray(saved.schools) && saved.schools.length) {
-            state.data = {
-                schools: saved.schools,
-                records: saved.records && typeof saved.records === "object" ? saved.records : {},
-            };
-            state.selectedSchoolId = settings.selectedSchoolId || "";
-            state.selectedGrade = settings.selectedGrade || "6";
-            state.selectedClass = settings.selectedClass || "";
-            state.selectedSkillId = settings.selectedSkillId || "";
-            state.selectedTestId = settings.selectedTestId || "";
-            state.selectedSemester = settings.selectedSemester || "I";
-            state.sortMode = settings.sortMode || "given";
-        } else if (!migrateLegacyData()) {
+        if (!state.data.schools || !Array.isArray(state.data.schools)) {
             state.data = makeDefaultData();
         }
     } catch (error) {
-        state.data = makeDefaultData();
+        console.warn("Local JSON Server unavailable, using browser fallback:", error.message);
+        state.storageAvailable = false;
+        try {
+            const saved = JSON.parse(storage?.getItem(STORAGE_KEY) || "null");
+            const settings = JSON.parse(storage?.getItem(SETTINGS_KEY) || "{}");
+            if (saved && Array.isArray(saved.schools) && saved.schools.length) {
+                state.data = {
+                    schools: saved.schools,
+                    records: saved.records && typeof saved.records === "object" ? saved.records : {},
+                };
+                state.selectedSchoolId = settings.selectedSchoolId || "";
+                state.selectedGrade = settings.selectedGrade || "6";
+                state.selectedClass = settings.selectedClass || "";
+                state.selectedSkillId = settings.selectedSkillId || "";
+                state.selectedTestId = settings.selectedTestId || "";
+                state.selectedSemester = settings.selectedSemester || "I";
+                state.sortMode = settings.sortMode || "given";
+            } else {
+                state.data = makeDefaultData();
+            }
+        } catch {
+            state.data = makeDefaultData();
+        }
     }
 
     ensureTestsFromRecords();
@@ -574,20 +954,7 @@ function loadState() {
 }
 
 function saveState() {
-    if (!storage) return;
-    storage.setItem(STORAGE_KEY, JSON.stringify(state.data));
-    storage.setItem(
-        SETTINGS_KEY,
-        JSON.stringify({
-            selectedSchoolId: state.selectedSchoolId,
-            selectedGrade: state.selectedGrade,
-            selectedClass: state.selectedClass,
-            selectedSkillId: state.selectedSkillId,
-            selectedTestId: state.selectedTestId,
-            selectedSemester: state.selectedSemester,
-            sortMode: state.sortMode,
-        })
-    );
+    scheduleSaveState("app data change");
 }
 
 function clampInteger(value, min, max) {
@@ -764,7 +1131,7 @@ function renderSelectors() {
         ? state.data.schools
             .map((school) => `<option value="${escapeHtml(school.id)}">${escapeHtml(school.name)}</option>`)
             .join("")
-        : '<option value="">Chưa có trường</option>';
+        : '<option value="">Nhập tên trường</option>';
     elements.schoolSelect.value = state.selectedSchoolId;
     elements.schoolSelect.disabled = !state.data.schools.length;
 
@@ -936,6 +1303,7 @@ function updateComputedScores() {
 function resetForm(keepFocus = true) {
     state.editingId = null;
     elements.studentName.value = "";
+    clearDraft();
     renderPartScoreInputs({});
     elements.saveBtn.textContent = "Lưu học sinh";
 
@@ -1175,6 +1543,7 @@ function upsertRecord(event) {
     saveState();
     renderTable();
     resetForm(true);
+    clearDraft();
     showToast(wasEditing ? "Đã cập nhật điểm học sinh." : "Đã lưu điểm học sinh.");
 }
 
@@ -1211,6 +1580,7 @@ function deleteRecord(id) {
     const ok = window.confirm(`Xóa học sinh "${record.fullName}" khỏi kỹ năng đang chọn?`);
     if (!ok) return;
 
+    addTrashItems([buildRecordTrashItem(record, recordKey, "Xóa 1 dòng điểm học sinh")]);
     state.data.records[recordKey] = bucket.filter((item) => item.id !== id);
     saveState();
     renderTable();
@@ -1237,6 +1607,9 @@ function clearCurrentSkill() {
     const ok = window.confirm(`Xóa toàn bộ ${count} học sinh của kỹ năng ${skill.name} trong lớp ${state.selectedClass}?`);
     if (!ok) return;
 
+    addTrashItems((state.data.records[recordKey] || []).map((record) =>
+        buildRecordTrashItem(record, recordKey, "Xóa điểm kỹ năng đang chọn")
+    ));
     state.data.records[recordKey] = [];
     saveState();
     renderTable();
@@ -1292,11 +1665,16 @@ function deleteSchool() {
     const ok = window.confirm(`Xóa trường "${school.name}" và toàn bộ dữ liệu điểm thuộc trường này?`);
     if (!ok) return;
 
+    const trashItems = [];
     Object.keys(state.data.records).forEach((recordKey) => {
         if (recordKey.startsWith(`${school.id}::`)) {
+            (state.data.records[recordKey] || []).forEach((record) => {
+                trashItems.push(buildRecordTrashItem(record, recordKey, "Xóa trường kèm điểm học sinh"));
+            });
             delete state.data.records[recordKey];
         }
     });
+    addTrashItems(trashItems);
 
     state.data.schools = state.data.schools.filter((item) => item.id !== school.id);
     state.selectedSchoolId = state.data.schools[0]?.id || "";
@@ -1409,15 +1787,26 @@ function deleteGrade() {
     const ok = window.confirm(`Xóa ${getGradeLabel(grade)} và toàn bộ lớp/dữ liệu điểm thuộc khối này?`);
     if (!ok) return;
 
+    const trashItems = [];
     classList.forEach((className) => {
         const classKey = getClassKey(school.id, grade, className);
-        delete school.classConfigs[classKey];
+        trashItems.push(buildMetadataTrashItem(
+            "class-metadata",
+            { schoolId: school.id, schoolName: school.name, grade, className },
+            { grade, className, classConfig: JSON.parse(JSON.stringify(school.classConfigs?.[classKey] || {})) },
+            "Xóa khối kèm lớp"
+        ));
         Object.keys(state.data.records).forEach((recordKey) => {
             if (recordKey.startsWith(`${classKey}::`)) {
+                (state.data.records[recordKey] || []).forEach((record) => {
+                    trashItems.push(buildRecordTrashItem(record, recordKey, "Xóa khối kèm điểm học sinh"));
+                });
                 delete state.data.records[recordKey];
             }
         });
+        delete school.classConfigs[classKey];
     });
+    addTrashItems(trashItems);
 
     delete school.grades[grade];
     const remainingGrades = getSchoolGradeKeys(school);
@@ -1480,6 +1869,31 @@ function deleteClass() {
     if (!ok) return;
 
     const classKey = getClassKey(school.id, state.selectedGrade, className);
+    const trashItems = [buildMetadataTrashItem(
+        "class-metadata",
+        {
+            schoolId: school.id,
+            schoolName: school.name,
+            grade: state.selectedGrade,
+            className,
+        },
+        {
+            grade: state.selectedGrade,
+            className,
+            classConfig: JSON.parse(JSON.stringify(school.classConfigs?.[classKey] || {})),
+        },
+        "Xóa lớp"
+    )];
+
+    Object.keys(state.data.records).forEach((recordKey) => {
+        if (recordKey.startsWith(`${classKey}::`)) {
+            (state.data.records[recordKey] || []).forEach((record) => {
+                trashItems.push(buildRecordTrashItem(record, recordKey, "Xóa lớp kèm điểm học sinh"));
+            });
+        }
+    });
+    addTrashItems(trashItems);
+
     school.grades[state.selectedGrade] = (school.grades[state.selectedGrade] || []).filter((item) => item !== className);
     delete school.classConfigs[classKey];
 
@@ -1591,11 +2005,29 @@ function deleteTest() {
     );
     if (!ok) return;
 
+    const trashItems = [buildMetadataTrashItem(
+        "test-metadata",
+        {
+            schoolId: getSelectedSchool()?.id,
+            schoolName: getSelectedSchool()?.name,
+            grade: state.selectedGrade,
+            className: state.selectedClass,
+            testId: test.id,
+            testName: test.name,
+        },
+        { test: JSON.parse(JSON.stringify(test)) },
+        "Xóa bài làm"
+    )];
+
     (config.skills || []).forEach((skill) => {
         const recordKey = getRecordKey(classKey, skill.id);
         const records = Array.isArray(state.data.records[recordKey]) ? state.data.records[recordKey] : [];
+        records.filter((record) => recordBelongsToTestAnySemester(record, test)).forEach((record) => {
+            trashItems.push(buildRecordTrashItem(record, recordKey, "Xóa bài làm kèm điểm học sinh"));
+        });
         state.data.records[recordKey] = records.filter((record) => !recordBelongsToTestAnySemester(record, test));
     });
+    addTrashItems(trashItems);
 
     config.tests = config.tests.filter((item) => item.id !== test.id);
     state.selectedTestId = config.tests[0]?.id || "";
@@ -1647,6 +2079,10 @@ function deleteSkill() {
 
     const classKey = getSelectedClassKey();
     const recordKey = getRecordKey(classKey, skill.id);
+    const trashItems = (state.data.records[recordKey] || []).map((record) =>
+        buildRecordTrashItem(record, recordKey, "Xóa kỹ năng kèm điểm học sinh")
+    );
+    addTrashItems(trashItems);
     delete state.data.records[recordKey];
 
     config.skills = config.skills.filter((item) => item.id !== skill.id);
@@ -3097,6 +3533,223 @@ async function handleImportExcel(event) {
     }
 }
 
+
+function getTrashTypeLabel(item) {
+    if (item.entityType === "student-record") return "Điểm học sinh";
+    if (item.entityType === "class-metadata") return "Lớp";
+    if (item.entityType === "test-metadata") return "Bài làm";
+    return "Metadata";
+}
+
+function isTrashItemVisible(item) {
+    const typeFilter = elements.restoreTypeFilter?.value || "all";
+    if (typeFilter === "student-record" && item.entityType !== "student-record") return false;
+    if (typeFilter === "metadata" && item.entityType === "student-record") return false;
+
+    const keyword = getSearchableText(elements.restoreSearchInput?.value || "");
+    if (!keyword) return true;
+    const context = item.context || {};
+    const haystack = getSearchableText([
+        item.entityType,
+        item.reason,
+        context.schoolName,
+        context.grade,
+        context.className,
+        context.skillName,
+        context.semester,
+        context.testName,
+        context.fullName,
+        context.total,
+    ].filter(Boolean).join(" "));
+    return haystack.includes(keyword);
+}
+
+function renderTrashTable() {
+    const visibleItems = restoreCenterTrashItems.filter(isTrashItemVisible);
+    elements.trashCountBadge.textContent = `${visibleItems.length} mục`;
+
+    if (!visibleItems.length) {
+        elements.trashTableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Không có dữ liệu phù hợp để restore.</td></tr>';
+        return;
+    }
+
+    elements.trashTableBody.innerHTML = visibleItems.map((item) => {
+        const context = item.context || {};
+        const isRecord = item.entityType === "student-record";
+        const typeClass = isRecord ? "record" : "metadata";
+        return `
+            <tr>
+                <td class="numeric"><input type="checkbox" class="trash-select" value="${escapeHtml(item.trashId)}" /></td>
+                <td>${escapeHtml(formatDateTime(item.deletedAt))}</td>
+                <td><span class="type-pill ${typeClass}">${escapeHtml(getTrashTypeLabel(item))}</span></td>
+                <td>
+                    <div class="restore-context">
+                        <span class="context-main">${escapeHtml(context.schoolName || "")}</span>
+                        <span class="context-sub">${escapeHtml(getContextText(context))}</span>
+                    </div>
+                </td>
+                <td>${escapeHtml(context.fullName || "—")}</td>
+                <td class="numeric">${context.total !== undefined && context.total !== null ? formatScore(context.total) : "—"}</td>
+                <td>${escapeHtml(item.reason || "")}</td>
+            </tr>
+        `;
+    }).join("");
+}
+
+function formatBytes(bytes) {
+    const num = Number(bytes || 0);
+    if (num < 1024) return `${num} B`;
+    if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+    return `${(num / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderBackupList() {
+    elements.backupCountBadge.textContent = `${restoreCenterBackups.length} bản`;
+    if (!restoreCenterBackups.length) {
+        elements.backupList.innerHTML = '<div class="empty-state">Chưa có backup nào.</div>';
+        return;
+    }
+
+    elements.backupList.innerHTML = restoreCenterBackups.map((backup) => `
+        <div class="backup-item">
+            <div>
+                <div class="backup-title">${escapeHtml(backup.name)}</div>
+                <div class="backup-meta">${escapeHtml(backup.type)} · ${escapeHtml(formatDateTime(backup.createdAt))} · ${escapeHtml(formatBytes(backup.sizeBytes))}</div>
+            </div>
+            <button type="button" class="icon-btn" data-backup-id="${escapeHtml(backup.id)}">Restore full</button>
+        </div>
+    `).join("");
+}
+
+async function loadRestoreCenterData() {
+    try {
+        const [trashResult, backupsResult] = await Promise.all([
+            apiRequest("/api/trash"),
+            apiRequest("/api/backups"),
+        ]);
+        restoreCenterTrashItems = Array.isArray(trashResult.items) ? trashResult.items : [];
+        restoreCenterBackups = Array.isArray(backupsResult.backups) ? backupsResult.backups : [];
+        renderTrashTable();
+        renderBackupList();
+        if (elements.restoreDataInfo) {
+            elements.restoreDataInfo.textContent = "Chọn từng dòng hoặc lọc theo học sinh/lớp/bài làm để restore linh hoạt.";
+        }
+    } catch (error) {
+        console.error(error);
+        showToast("Không tải được Backup / Restore Center. Hãy kiểm tra Local JSON Server.");
+    }
+}
+
+async function openRestoreCenter() {
+    if (!state.storageAvailable) {
+        showToast("Cần chạy Local JSON Server để dùng Backup / Restore.");
+        return;
+    }
+    elements.restoreModal.classList.remove("hidden");
+    elements.restoreModal.setAttribute("aria-hidden", "false");
+    await loadRestoreCenterData();
+}
+
+function closeRestoreCenter() {
+    elements.restoreModal.classList.add("hidden");
+    elements.restoreModal.setAttribute("aria-hidden", "true");
+}
+
+function getSelectedTrashIds() {
+    return Array.from(elements.trashTableBody.querySelectorAll(".trash-select:checked")).map((checkbox) => checkbox.value);
+}
+
+function selectVisibleTrashItems() {
+    elements.trashTableBody.querySelectorAll(".trash-select").forEach((checkbox) => {
+        checkbox.checked = true;
+    });
+}
+
+function clearTrashSelection() {
+    elements.trashTableBody.querySelectorAll(".trash-select").forEach((checkbox) => {
+        checkbox.checked = false;
+    });
+}
+
+async function restoreSelectedTrashItems() {
+    const ids = getSelectedTrashIds();
+    if (!ids.length) {
+        showToast("Hãy chọn ít nhất một dữ liệu cần restore.");
+        return;
+    }
+
+    const selectedItems = restoreCenterTrashItems.filter((item) => ids.includes(item.trashId));
+    const ok = window.confirm(`Restore ${selectedItems.length} mục đã chọn?`);
+    if (!ok) return;
+
+    let restored = 0;
+    selectedItems.forEach((item) => {
+        if (item.entityType === "student-record") {
+            if (restoreRecordTrashItem(item)) restored += 1;
+        } else if (restoreMetadataTrashItem(item)) {
+            restored += 1;
+        }
+    });
+
+    ensureTestsFromRecords();
+    ensureValidSelection();
+    saveState();
+    await flushPendingSave("restore selected trash");
+
+    try {
+        await apiRequest("/api/trash/mark-restored", {
+            method: "POST",
+            body: JSON.stringify({ trashIds: ids }),
+        });
+    } catch (error) {
+        console.warn(error.message);
+    }
+
+    resetForm(false);
+    renderAll();
+    await loadRestoreCenterData();
+    showToast(`Đã restore ${restored} mục.`);
+}
+
+async function createManualBackup() {
+    try {
+        await flushPendingSave("manual backup preparation");
+        await apiRequest("/api/backups/manual", {
+            method: "POST",
+            body: JSON.stringify({ reason: "manual backup from app" }),
+        });
+        await loadRestoreCenterData();
+        showToast("Đã tạo backup thủ công.");
+    } catch (error) {
+        console.error(error);
+        showToast("Không tạo được backup thủ công.");
+    }
+}
+
+async function restoreFullBackup(backupId) {
+    const backup = restoreCenterBackups.find((item) => item.id === backupId);
+    if (!backup) return;
+    const ok = window.confirm(
+        `Restore toàn bộ dữ liệu từ backup này?\n\n${backup.name}\n${formatDateTime(backup.createdAt)}\n\nDữ liệu hiện tại sẽ được backup thêm trước khi restore.`
+    );
+    if (!ok) return;
+
+    try {
+        await apiRequest("/api/backups/restore", {
+            method: "POST",
+            body: JSON.stringify({ id: backupId }),
+        });
+        await loadState();
+        resetForm(false);
+        renderAll();
+        await loadRestoreCenterData();
+        showToast("Đã restore toàn bộ dữ liệu từ backup.");
+    } catch (error) {
+        console.error(error);
+        showToast(error.message || "Không restore được backup.");
+    }
+}
+
 function bindEvents() {
     elements.schoolSelect.addEventListener("change", (event) => {
         state.selectedSchoolId = event.target.value;
@@ -3168,9 +3821,30 @@ function bindEvents() {
     elements.deleteTestBtn.addEventListener("click", deleteTest);
     elements.addPartBtn.addEventListener("click", addPart);
 
+    elements.openRestoreCenterBtn.addEventListener("click", openRestoreCenter);
+    elements.closeRestoreCenterBtn.addEventListener("click", closeRestoreCenter);
+    elements.refreshRestoreCenterBtn.addEventListener("click", loadRestoreCenterData);
+    elements.createManualBackupBtn.addEventListener("click", createManualBackup);
+    elements.selectVisibleTrashBtn.addEventListener("click", selectVisibleTrashItems);
+    elements.clearTrashSelectionBtn.addEventListener("click", clearTrashSelection);
+    elements.restoreSelectedTrashBtn.addEventListener("click", restoreSelectedTrashItems);
+    elements.restoreSearchInput.addEventListener("input", renderTrashTable);
+    elements.restoreTypeFilter.addEventListener("change", renderTrashTable);
+    elements.backupList.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-backup-id]");
+        if (!button) return;
+        restoreFullBackup(button.dataset.backupId);
+    });
+    elements.restoreModal.addEventListener("click", (event) => {
+        if (event.target === elements.restoreModal) closeRestoreCenter();
+    });
+
+    elements.studentName.addEventListener("input", scheduleDraftSave);
+
     elements.partScoreList.addEventListener("input", (event) => {
         if (event.target.matches("input[data-score-part-id]")) {
             updateComputedScores();
+            scheduleDraftSave();
         }
     });
 
@@ -3211,6 +3885,19 @@ function bindEvents() {
         renderTable();
     });
 
+    window.addEventListener("beforeunload", () => {
+        if (saveTimer) {
+            const payload = JSON.stringify({
+                data: state.data,
+                settings: getCurrentSettingsSnapshot(),
+                reason: "beforeunload",
+            });
+            if (navigator.sendBeacon && state.storageAvailable) {
+                navigator.sendBeacon(`${LOCAL_SERVER_BASE}/api/state`, new Blob([payload], { type: "application/json" }));
+            }
+        }
+    });
+
     elements.scoreForm.addEventListener("keydown", (event) => {
         if (event.key !== "Enter") return;
         if (!event.target.matches("input")) return;
@@ -3234,15 +3921,13 @@ function bindEvents() {
     });
 }
 
-function init() {
-    loadState();
-    elements.storageHint.textContent = state.storageAvailable
-        ? ""
-        : "Trình duyệt hiện không cho localStorage. Dữ liệu chỉ giữ tạm trong phiên đang mở.";
-
+async function init() {
+    await loadState();
+    updateStorageHint();
     elements.sortModeSelect.value = state.sortMode;
     bindEvents();
     renderAll();
+    await restoreDraftIfAvailable();
 }
 
 init();

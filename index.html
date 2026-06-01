@@ -22,6 +22,7 @@
                 <button id="exportCurrentSkillBtn" class="btn btn-primary">Xuất kỹ năng đang chọn</button>
                 <button id="exportCurrentClassBtn" class="btn btn-secondary">Xuất lớp đang chọn</button>
                 <button id="exportAllBtn" class="btn btn-secondary">Xuất tất cả dữ liệu</button>
+                <button id="openRestoreCenterBtn" class="btn btn-secondary">Backup / Restore</button>
             </div>
         </header>
 
@@ -214,6 +215,78 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <div id="restoreModal" class="modal-backdrop hidden" aria-hidden="true">
+        <div class="modal-card restore-card" role="dialog" aria-modal="true" aria-labelledby="restoreModalTitle">
+            <div class="modal-head">
+                <div>
+                    <h2 id="restoreModalTitle">Backup / Restore Center</h2>
+                    <p id="restoreDataInfo" class="panel-note">Quản lý backup, thùng rác và khôi phục dữ liệu đã xóa.</p>
+                </div>
+                <button type="button" id="closeRestoreCenterBtn" class="icon-btn">Đóng</button>
+            </div>
+
+            <div class="restore-toolbar">
+                <button type="button" id="createManualBackupBtn" class="btn btn-secondary">Tạo backup thủ công</button>
+                <button type="button" id="refreshRestoreCenterBtn" class="btn btn-secondary">Làm mới danh sách</button>
+                <button type="button" id="selectVisibleTrashBtn" class="btn btn-secondary">Chọn dữ liệu đang lọc</button>
+                <button type="button" id="clearTrashSelectionBtn" class="btn btn-secondary">Bỏ chọn</button>
+                <button type="button" id="restoreSelectedTrashBtn" class="btn btn-primary">Restore dữ liệu đã chọn</button>
+            </div>
+
+            <div class="restore-grid">
+                <section class="restore-section">
+                    <div class="section-head-row">
+                        <h3>Thùng rác dữ liệu đã xóa</h3>
+                        <span id="trashCountBadge" class="badge">0 mục</span>
+                    </div>
+                    <div class="restore-filters">
+                        <label class="field">
+                            <span>Tìm dữ liệu cần restore</span>
+                            <input id="restoreSearchInput" type="text" placeholder="Tìm học sinh, lớp, bài làm, kỹ năng, trường..." />
+                        </label>
+                        <label class="field">
+                            <span>Loại dữ liệu</span>
+                            <select id="restoreTypeFilter">
+                                <option value="all">Tất cả</option>
+                                <option value="student-record">Điểm học sinh</option>
+                                <option value="metadata">Trường / khối / lớp / bài / kỹ năng</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="trash-table-wrap">
+                        <table class="restore-table">
+                            <thead>
+                                <tr>
+                                    <th class="numeric">Chọn</th>
+                                    <th>Thời gian xóa</th>
+                                    <th>Loại</th>
+                                    <th>Ngữ cảnh</th>
+                                    <th>Học sinh</th>
+                                    <th class="numeric">Điểm</th>
+                                    <th>Lý do</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trashTableBody">
+                                <tr><td colspan="7" class="empty-state">Chưa tải thùng rác.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="restore-section backup-section">
+                    <div class="section-head-row">
+                        <h3>Backup toàn bộ dữ liệu</h3>
+                        <span id="backupCountBadge" class="badge">0 bản</span>
+                    </div>
+                    <p class="panel-note">Dùng khi cần quay lại toàn bộ dữ liệu tại một thời điểm cũ. Trước khi restore full backup, server sẽ tự tạo thêm một backup hiện tại.</p>
+                    <div class="backup-list" id="backupList">
+                        <div class="empty-state">Chưa tải danh sách backup.</div>
+                    </div>
+                </section>
+            </div>
+        </div>
     </div>
 
     <div id="toast" class="toast"></div>

@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Real local data - DO NOT push student data to GitHub
+data/
+backups/
+*.backup.json
+*.local.json
+grading-data.json
+settings.json
+draft-data.json
+trash.json
+
+# Generated exports / packages
+exports/
+*.xlsx
+*.zip
+*.exe
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

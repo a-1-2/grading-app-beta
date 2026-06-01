@@ -1,8 +1,8 @@
 {
     "name": "local-exam-grading-app",
-    "version": "1.1.0",
+    "version": "1.3.0",
     "private": true,
-    "description": "Trang web local chấm điểm bài thi theo lớp, xuất Excel .xlsx, chạy bằng node script.js",
+    "description": "Trang web local chấm điểm bài thi, dùng Local JSON Server, clean data, autosave, backup, restore và xuất Excel .xlsx",
     "scripts": {
         "start": "node script.js"
     }
