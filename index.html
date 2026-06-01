@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chấm điểm bài thi theo trường - lớp - kỹ năng</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="topbar-title">
+        <p class="eyebrow">Local grading app</p>
+        <h1>Chấm điểm bài thi theo trường, lớp và kỹ năng</h1>
+      </div>
+      <div class="topbar-actions">
+        <label for="importExcelInput" class="btn btn-secondary import-btn">Nhập Excel</label>
+        <input
+          id="importExcelInput"
+          class="visually-hidden-file"
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        />
+        <button id="exportCurrentSkillBtn" class="btn btn-primary">Xuất kỹ năng đang chọn</button>
+        <button id="exportCurrentClassBtn" class="btn btn-secondary">Xuất lớp đang chọn</button>
+        <button id="exportAllBtn" class="btn btn-secondary">Xuất tất cả dữ liệu</button>
+      </div>
+    </header>
+
+    <main class="app-layout">
+      <section class="panel left-panel">
+        <div class="left-scroll">
+          <div class="panel-head compact-head">
+            <div>
+              <h2>Thiết lập chấm bài</h2>
+              <p id="storageHint" class="panel-note"></p>
+            </div>
+          </div>
+
+          <div class="setup-card">
+            <div class="setup-title-row">
+              <h3>Trường và lớp</h3>
+              <div class="mini-actions">
+                <button type="button" id="addSchoolBtn" class="mini-btn">+ Trường</button>
+                <button type="button" id="deleteSchoolBtn" class="mini-btn danger">Xóa</button>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>Tên trường</span>
+              <select id="schoolSelect"></select>
+            </label>
+
+            <div class="grid two-col">
+              <label class="field">
+                <span>Khối lớp</span>
+                <select id="gradeSelect"></select>
+              </label>
+
+              <label class="field">
+                <span>Lớp</span>
+                <select id="classSelect"></select>
+              </label>
+            </div>
+
+            <div class="mini-actions grade-actions">
+              <button type="button" id="addGradeBtn" class="mini-btn">+ Khối</button>
+              <button type="button" id="editGradeBtn" class="mini-btn">Sửa khối</button>
+              <button type="button" id="deleteGradeBtn" class="mini-btn danger">Xóa khối</button>
+            </div>
+
+            <div class="action-row compact-actions">
+              <button type="button" id="addClassBtn" class="btn btn-secondary">Thêm lớp cho trường này</button>
+              <button type="button" id="deleteClassBtn" class="btn btn-danger">Xóa lớp đang chọn</button>
+            </div>
+          </div>
+
+          <div class="setup-card">
+            <div class="setup-title-row">
+              <h3>Kỹ năng bài thi</h3>
+              <div class="mini-actions">
+                <button type="button" id="addSkillBtn" class="mini-btn">+ Kỹ năng</button>
+                <button type="button" id="deleteSkillBtn" class="mini-btn danger">Xóa</button>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>Kỹ năng đang chấm</span>
+              <select id="skillSelect"></select>
+            </label>
+          </div>
+
+          <div class="setup-card">
+            <div class="setup-title-row">
+              <h3>Bài làm</h3>
+              <div class="mini-actions">
+                <button type="button" id="addTestBtn" class="mini-btn">+ Bài</button>
+                <button type="button" id="editTestBtn" class="mini-btn">Sửa</button>
+                <button type="button" id="deleteTestBtn" class="mini-btn danger">Xóa</button>
+              </div>
+            </div>
+
+            <div class="grid two-col">
+              <label class="field">
+                <span>Học kỳ đang chấm</span>
+                <select id="semesterSelect">
+                  <option value="I">Học kỳ I</option>
+                  <option value="II">Học kỳ II</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Tên bài làm đang chấm</span>
+                <select id="testSelect"></select>
+              </label>
+            </div>
+
+            <p id="selectedTestMeta" class="panel-note test-meta">Chưa chọn học kỳ hoặc bài làm</p>
+          </div>
+
+          <form id="scoreForm" autocomplete="off">
+            <label class="field student-field">
+              <span>Họ và tên học sinh</span>
+              <input id="studentName" type="text" placeholder="Ví dụ: Nguyễn Hoàng Minh" maxlength="80" />
+            </label>
+
+            <div id="partScoreList" class="part-score-list"></div>
+
+            <div class="total-card compact-total-card">
+              <div>
+                <span>Tổng điểm</span>
+                <strong id="totalScore">0</strong>
+              </div>
+            </div>
+
+            <div class="action-row">
+              <button type="submit" id="saveBtn" class="btn btn-primary btn-wide">Lưu học sinh</button>
+              <button type="button" id="resetFormBtn" class="btn btn-secondary">Làm mới form</button>
+            </div>
+
+            <div class="action-row single-action">
+              <button type="button" id="clearSkillBtn" class="btn btn-danger">Xóa điểm kỹ năng đang chọn</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel right-panel">
+        <div class="right-scroll-shell">
+          <div class="right-top-grid">
+            <section class="config-card">
+              <div class="panel-head compact-head">
+                <div>
+                  <h2>Cấu hình part</h2>
+                  <p id="currentConfigLabel" class="panel-note">Chưa chọn lớp</p>
+                </div>
+                <button type="button" id="addPartBtn" class="btn btn-secondary small-btn">+ Thêm part</button>
+              </div>
+
+              <div id="partsConfigList" class="parts-config-list"></div>
+            </section>
+
+            <section class="stats-grid">
+              <div class="stat-card">
+                <span>Số học sinh</span>
+                <strong id="studentCount">0</strong>
+              </div>
+              <div class="stat-card">
+                <span>Điểm trung bình</span>
+                <strong id="averageScore">0</strong>
+              </div>
+              <div class="stat-card">
+                <span>Cao nhất</span>
+                <strong id="highestScore">0</strong>
+              </div>
+              <div class="stat-card">
+                <span>Thấp nhất</span>
+                <strong id="lowestScore">0</strong>
+              </div>
+            </section>
+          </div>
+
+          <div class="table-section-head">
+            <div>
+              <h2>Danh sách điểm</h2>
+              <p id="currentClassLabel" class="panel-note">Chưa chọn lớp</p>
+            </div>
+            <div class="toolbar">
+              <label class="field small-field">
+                <span>Sắp xếp</span>
+                <select id="sortModeSelect">
+                  <option value="given">Theo tên</option>
+                  <option value="full">Theo họ tên đầy đủ</option>
+                </select>
+              </label>
+              <label class="field small-field search-field">
+                <span>Tìm nhanh</span>
+                <input id="searchInput" type="text" placeholder="Tìm theo tên học sinh" />
+              </label>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table id="scoreTable">
+              <thead id="scoreTableHead"></thead>
+              <tbody id="scoreTableBody">
+                <tr>
+                  <td class="empty-state">Chọn trường, lớp và kỹ năng để bắt đầu chấm điểm.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
